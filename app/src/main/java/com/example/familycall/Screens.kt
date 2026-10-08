@@ -40,6 +40,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -134,6 +135,7 @@ fun CallScreen(store: Store) {
     val context = LocalContext.current
     val contacts = remember { mutableStateListOf<Contact>().apply { addAll(store.loadContacts()) } }
     var editing by remember { mutableStateOf<Contact?>(null) }
+    var confirmingContact by remember { mutableStateOf<Contact?>(null) }
     var showEditor by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
@@ -154,12 +156,36 @@ fun CallScreen(store: Store) {
             items(contacts, key = { it.id }) { c ->
                 ContactTile(
                     contact = c,
-                    onTap = { placeCall(context, c.phone) },
-                    onLongPress = { editing = c; showEditor = true }
+                    onTap = {
+                        if (confirmingContact != null) return@ContactTile
+                        if (store.confirmBeforeCall) {
+                            confirmingContact = c
+                        } else {
+                            placeCall(context, c.phone)
+                        }
+                    },
+                    onLongPress = {
+                        if (confirmingContact != null) return@ContactTile
+                        editing = c
+                        showEditor = true
+                    }
                 )
             }
             item { AddTile { editing = null; showEditor = true } }
         }
+    }
+
+    confirmingContact?.let { contact ->
+        ConfirmContactView(
+            contact = contact,
+            onYes = {
+                confirmingContact = null
+                placeCall(context, contact.phone)
+            },
+            onNo = {
+                confirmingContact = null
+            }
+        )
     }
 
     if (showEditor) {
@@ -167,6 +193,13 @@ fun CallScreen(store: Store) {
             initial = editing,
             onDismiss = { showEditor = false },
             onSave = { saved ->
+                if (saved.sosCall) {
+                    for (i in contacts.indices) {
+                        if (contacts[i].id != saved.id && contacts[i].sosCall) {
+                            contacts[i] = contacts[i].copy(sosCall = false)
+                        }
+                    }
+                }
                 val idx = contacts.indexOfFirst { it.id == saved.id }
                 if (idx >= 0) contacts[idx] = saved else contacts.add(saved)
                 store.saveContacts(contacts.toList())
@@ -176,6 +209,25 @@ fun CallScreen(store: Store) {
                 contacts.removeAll { it.id == c.id }
                 store.saveContacts(contacts.toList())
                 showEditor = false
+            },
+            onMove = { currentEdited, delta ->
+                val idx = contacts.indexOfFirst { it.id == currentEdited.id }
+                if (idx >= 0) {
+                    val newIdx = idx + delta
+                    if (newIdx in contacts.indices) {
+                        if (currentEdited.sosCall) {
+                            for (i in contacts.indices) {
+                                if (contacts[i].id != currentEdited.id && contacts[i].sosCall) {
+                                    contacts[i] = contacts[i].copy(sosCall = false)
+                                }
+                            }
+                        }
+                        contacts[idx] = currentEdited
+                        val item = contacts.removeAt(idx)
+                        contacts.add(newIdx, item)
+                        store.saveContacts(contacts.toList())
+                    }
+                }
             }
         )
     }
@@ -237,7 +289,8 @@ fun ContactEditor(
     initial: Contact?,
     onDismiss: () -> Unit,
     onSave: (Contact) -> Unit,
-    onDelete: (Contact) -> Unit
+    onDelete: (Contact) -> Unit,
+    onMove: ((current: Contact, delta: Int) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val id = remember { initial?.id ?: UUID.randomUUID().toString() }
@@ -245,7 +298,8 @@ fun ContactEditor(
     var phone by remember { mutableStateOf(initial?.phone ?: "") }
     var photoPath by remember { mutableStateOf(initial?.photoPath) }
     var shareLocation by remember { mutableStateOf(initial?.shareLocation ?: false) }
-    var sos by remember { mutableStateOf(initial?.sos ?: false) }
+    var sosMessage by remember { mutableStateOf(initial?.sosMessage ?: false) }
+    var sosCall by remember { mutableStateOf(initial?.sosCall ?: false) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) savePhoto(context, uri)?.let { photoPath = it }
@@ -270,10 +324,33 @@ fun ContactEditor(
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { sos = !sos }
+                    modifier = Modifier.clickable { sosMessage = !sosMessage }
                 ) {
-                    Checkbox(checked = sos, onCheckedChange = { sos = it })
-                    Text("SOS goes to this person")
+                    Checkbox(checked = sosMessage, onCheckedChange = { sosMessage = it })
+                    Text("SOS: send message")
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { sosCall = !sosCall }
+                ) {
+                    Checkbox(checked = sosCall, onCheckedChange = { sosCall = it })
+                    Text("SOS: call this person")
+                }
+                if (initial != null && onMove != null) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Order:")
+                        Button(onClick = {
+                            val current = Contact(id, name.trim(), phone.trim(), photoPath, shareLocation, sosMessage, sosCall)
+                            onMove(current, -1)
+                        }) { Text("◀") }
+                        Button(onClick = {
+                            val current = Contact(id, name.trim(), phone.trim(), photoPath, shareLocation, sosMessage, sosCall)
+                            onMove(current, 1)
+                        }) { Text("▶") }
+                    }
                 }
                 Button(onClick = {
                     picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -288,7 +365,7 @@ fun ContactEditor(
         confirmButton = {
             TextButton(
                 enabled = name.isNotBlank() && phone.isNotBlank(),
-                onClick = { onSave(Contact(id, name.trim(), phone.trim(), photoPath, shareLocation, sos)) }
+                onClick = { onSave(Contact(id, name.trim(), phone.trim(), photoPath, shareLocation, sosMessage, sosCall)) }
             ) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
@@ -298,6 +375,7 @@ fun ContactEditor(
 @Composable
 fun SettingsDialog(store: Store, onClose: () -> Unit) {
     var senderName by remember { mutableStateOf(store.senderName) }
+    var confirmBeforeCall by remember { mutableStateOf(store.confirmBeforeCall) }
 
     AlertDialog(
         onDismissRequest = onClose,
@@ -308,6 +386,16 @@ fun SettingsDialog(store: Store, onClose: () -> Unit) {
                     senderName, { senderName = it }, singleLine = true,
                     label = { Text("This person's name (shown in messages)") }
                 )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { confirmBeforeCall = !confirmBeforeCall }
+                ) {
+                    Text("Ask before calling")
+                    Switch(checked = confirmBeforeCall, onCheckedChange = { confirmBeforeCall = it })
+                }
                 Text(
                     "Tip: press and hold a picture on the Call screen to edit or delete it.",
                     fontSize = 13.sp
@@ -317,6 +405,7 @@ fun SettingsDialog(store: Store, onClose: () -> Unit) {
         confirmButton = {
             TextButton(onClick = {
                 store.senderName = senderName.trim()
+                store.confirmBeforeCall = confirmBeforeCall
                 onClose()
             }) { Text("Save") }
         },
@@ -332,6 +421,7 @@ fun LocationScreen(store: Store) {
     val contacts = remember { store.loadContacts().filter { it.shareLocation } }
     var state by remember { mutableStateOf(SendState.Idle) }
     var activeContact by remember { mutableStateOf<Contact?>(null) }
+    var confirmingContact by remember { mutableStateOf<Contact?>(null) }
 
     Box(Modifier.fillMaxSize()) {
         Column(
@@ -369,14 +459,8 @@ fun LocationScreen(store: Store) {
                         ContactTile(
                             contact = c,
                             onTap = {
-                                if (state != SendState.Idle) return@ContactTile
-                                activeContact = c
-                                state = SendState.Sending
-                                fetchLocation(context) { loc ->
-                                    val ok = sendSms(context, listOf(c.phone), buildLocationMessage(store, loc))
-                                    state = if (ok) SendState.Sent else SendState.Error
-                                    feedback(context)
-                                }
+                                if (state != SendState.Idle || confirmingContact != null || activeContact != null) return@ContactTile
+                                confirmingContact = c
                             },
                             onLongPress = { /* Long-press does nothing on this tab */ }
                         )
@@ -385,6 +469,28 @@ fun LocationScreen(store: Store) {
             }
         }
 
+        // Full-screen confirm view
+        confirmingContact?.let { contact ->
+            ConfirmContactView(
+                contact = contact,
+                onYes = {
+                    val c = contact
+                    confirmingContact = null
+                    activeContact = c
+                    state = SendState.Sending
+                    fetchLocation(context) { loc ->
+                        val ok = sendSms(context, listOf(c.phone), buildLocationMessage(store, loc))
+                        state = if (ok) SendState.Sent else SendState.Error
+                        feedback(context)
+                    }
+                },
+                onNo = {
+                    confirmingContact = null
+                }
+            )
+        }
+
+        // Status overlay
         activeContact?.let { contact ->
             ActionOverlay(
                 state = state,
@@ -411,18 +517,27 @@ fun SosScreen(store: Store) {
         if (holding && state == SendState.Idle) {
             progress.animateTo(1f, tween(SOS_HOLD_MS, easing = LinearEasing))
             holding = false
-            val sosContacts = store.loadContacts().filter { it.sos }
-            if (sosContacts.isEmpty()) {
-                state = SendState.NotConfigured
-            } else {
+            val allContacts = store.loadContacts()
+            val msgContacts = allContacts.filter { it.sosMessage }
+            val callContact = allContacts.firstOrNull { it.sosCall }
+
+            if (msgContacts.isNotEmpty()) {
                 state = SendState.Sending
-                val numbers = sosContacts.map { it.phone }
+                val numbers = msgContacts.map { it.phone }
                 fetchLocation(context) { loc ->
                     val ok = sendSms(context, numbers, buildSosMessage(store, loc))
                     state = if (ok) SendState.Sent else SendState.Error
                     feedback(context)
-                    placeCall(context, sosContacts.first().phone)
+                    if (callContact != null) {
+                        placeCall(context, callContact.phone)
+                    }
                 }
+            } else if (callContact != null) {
+                state = SendState.Sent
+                feedback(context)
+                placeCall(context, callContact.phone)
+            } else {
+                state = SendState.NotConfigured
             }
         } else {
             progress.snapTo(0f)
@@ -463,6 +578,95 @@ private fun stateEmoji(state: SendState, idle: String) = when (state) {
     SendState.Sent -> "✅"
     SendState.Error -> "❌"
     SendState.NotConfigured -> "⚙️"
+}
+
+@Composable
+fun ConfirmContactView(
+    contact: Contact,
+    onYes: () -> Unit,
+    onNo: () -> Unit
+) {
+    LaunchedEffect(contact) {
+        delay(15000)
+        onNo()
+    }
+
+    val bitmap = remember(contact.photoPath) {
+        contact.photoPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.85f))
+            .pointerInput(Unit) {
+                detectTapGestures { /* Block taps */ }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(24.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(200.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = contact.name,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Text("👤", fontSize = 100.sp)
+                }
+            }
+
+            Text(
+                text = contact.name,
+                color = Color.White,
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 16.dp, bottom = 32.dp)
+            )
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(32.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Green ✔ (onYes)
+                Box(
+                    modifier = Modifier
+                        .size(96.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF2E7D32))
+                        .clickable(onClick = onYes),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("✔", fontSize = 48.sp, color = Color.White)
+                }
+
+                // Red ✖ (onNo)
+                Box(
+                    modifier = Modifier
+                        .size(96.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFC62828))
+                        .clickable(onClick = onNo),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("✖", fontSize = 48.sp, color = Color.White)
+                }
+            }
+        }
+    }
 }
 
 @Composable
