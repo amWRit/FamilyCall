@@ -11,7 +11,8 @@ data class Contact(
     val phone: String,
     val photoPath: String? = null,
     val shareLocation: Boolean = false,
-    val sos: Boolean = false
+    val sosMessage: Boolean = false,
+    val sosCall: Boolean = false
 )
 
 /** Everything is stored on the phone itself. No server, no database. */
@@ -29,7 +30,8 @@ class Store(context: Context) {
                 phone = o.getString("phone"),
                 photoPath = o.optString("photo").ifBlank { null },
                 shareLocation = o.optBoolean("loc", false),
-                sos = o.optBoolean("sos", false)
+                sosMessage = o.optBoolean("sosMsg", o.optBoolean("sos", false)),
+                sosCall = o.optBoolean("sosCall", false)
             )
         }
     }
@@ -44,7 +46,8 @@ class Store(context: Context) {
                     .put("phone", c.phone)
                     .put("photo", c.photoPath ?: "")
                     .put("loc", c.shareLocation)
-                    .put("sos", c.sos)
+                    .put("sosMsg", c.sosMessage)
+                    .put("sosCall", c.sosCall)
             )
         }
         prefs.edit().putString("contacts", arr.toString()).apply()
@@ -54,6 +57,11 @@ class Store(context: Context) {
     var senderName: String
         get() = prefs.getString("senderName", "") ?: ""
         set(v) = prefs.edit().putString("senderName", v).apply()
+
+    /** Whether tapping a contact on the Call tab asks for confirmation first. */
+    var confirmBeforeCall: Boolean
+        get() = prefs.getBoolean("confirmBeforeCall", true)
+        set(v) = prefs.edit().putBoolean("confirmBeforeCall", v).apply()
 
     /** Who receives the "share location" message (one number). */
     var locationRecipient: String
